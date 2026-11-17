@@ -41,7 +41,7 @@ test('slots: índices, bitmap y base64url ida y vuelta', () => {
   assert.ok(!C.dayHasAny(S, b, 3));
 });
 
-test('semanas L-D: páginas, repetir y borrar semana', () => {
+test('semanas L-D: páginas', () => {
   // 16-11-2026 es lunes: 30 días = 4 semanas completas + 2 días (lun 14 y mar 15 dic)
   assert.equal(C.weekCount(S), 5);
   assert.equal(C.weekFirstDay(S, 0), 0);
@@ -54,36 +54,61 @@ test('semanas L-D: páginas, repetir y borrar semana', () => {
   assert.equal(C.weekFirstDay(SJ, 0), -3);
   assert.equal(C.weekOfDay(SJ, 0), 0);
   assert.equal(C.weekOfDay(SJ, 4), 1); // lunes 23
-  const b = C.emptySlots(S);
-  on(b, 9, 18, 19); // miércoles de la semana 1
-  on(b, 2, 10); // miércoles de la semana 0, ya pasado si fromDay = 3
-  const changed = C.repeatWeek(S, b, 1, 3);
-  // se copia a los miércoles 16 y 23; el 2 es pasado y no se toca
-  for (const d of [16, 23]) { assert.ok(C.getBit(b, C.slotIndex(S, d, 18))); assert.ok(C.getBit(b, C.slotIndex(S, d, 19))); }
-  assert.ok(!C.getBit(b, C.slotIndex(S, 1, 18)));
-  assert.ok(C.getBit(b, C.slotIndex(S, 2, 10)), 'día pasado intacto');
-  assert.equal(changed, 4);
-  assert.equal(C.clearWeek(S, b, 2), 2);
-  assert.ok(!C.getBit(b, C.slotIndex(S, 16, 18)));
-  assert.equal(C.clearWeek(S, b, 0, 3), 0); // el día 2 es pasado: no se borra
-  assert.ok(C.getBit(b, C.slotIndex(S, 2, 10)));
 });
 
-test('enlace: codificar y decodificar (con y sin clave privada)', () => {
-  const s = C.newSession({ title: 'Cumple de Lúa', n: 5, startDate: '2026-11-16' });
+test('enlace: codificar y decodificar (con y sin clave privada, con creador y enlaces v1 antiguos)', () => {
+  const creator = 'cd'.repeat(32);
+  const s = C.newSession({ title: 'Cumple de Lúa', n: 5, startDate: '2026-11-16', creator });
   const dec = C.decodeLink('#' + C.encodeLink(s));
   assert.equal(dec.session.title, 'Cumple de Lúa');
   assert.equal(dec.session.n, 5);
   assert.equal(dec.session.startH, 9);
   assert.equal(dec.session.endH, 22);
+  assert.equal(dec.session.creator, creator);
   assert.deepEqual([...dec.session.key], [...s.key]);
   assert.equal(dec.priv, null);
   const priv = 'ab'.repeat(32);
-  assert.equal(C.decodeLink(C.encodeLink(s, priv)).priv, priv);
+  const withPriv = C.decodeLink(C.encodeLink(s, priv));
+  assert.equal(withPriv.priv, priv);
+  assert.equal(withPriv.session.creator, creator);
+  // enlace v1 (sin creador), como los de la primera versión publicada: se sigue abriendo
+  const v1 = C.bytesToB64u(C.utf8(JSON.stringify([1, s.id, C.bytesToB64u(s.key), 'Vieja', 4, 9, 22, '2026-11-16', priv])));
+  const d1 = C.decodeLink(v1);
+  assert.equal(d1.session.creator, null);
+  assert.equal(d1.priv, priv);
+  assert.equal(C.decodeLink(C.encodeLink(d1.session)).session.title, 'Vieja'); // y se vuelve a codificar como v1
+  // v2 con creador inválido
+  assert.equal(C.decodeLink(C.bytesToB64u(C.utf8(JSON.stringify([2, s.id, C.bytesToB64u(s.key), 'x', 4, 9, 22, '2026-11-16', 'zz'])))), null);
   assert.equal(C.decodeLink('#basura'), null);
   assert.equal(C.decodeLink(''), null);
   const bad = C.bytesToB64u(C.utf8(JSON.stringify([1, s.id, C.bytesToB64u(s.key), 'x', 25, 9, 22, '2026-11-16'])));
   assert.equal(C.decodeLink(bad), null); // más de 20 personas
+});
+
+test('colores: reparto de la casilla a partes iguales y mezcla para el brillo', () => {
+  assert.equal(C.cellFill([]), null);
+  assert.equal(C.cellFill(['red']), 'linear-gradient(var(--k-red), var(--k-red))');
+  assert.equal(C.cellFill(['red', 'blue']), 'linear-gradient(90deg, var(--k-red) 0% 50%, var(--k-blue) 50% 100%)');
+  assert.equal(C.cellFill(['green', 'blue', 'red']), 'linear-gradient(90deg, var(--k-green) 0% 33.333%, var(--k-blue) 33.333% 66.667%, var(--k-red) 66.667% 100%)');
+  assert.ok(C.cellFill(['lila']).includes('--k-graphite')); // color desconocido: grafito
+  const rgb = (m) => m.rgb.split(', ').map(Number);
+  // rojo + azul = lila (azul y rojo altos, verde más bajo)
+  const [r, g, b] = rgb(C.mixColors(['#ff3b30', '#007aff']));
+  assert.ok(b === 255 && r > 190 && g < r && g < b, `lila: ${r},${g},${b}`);
+  // amarillo + azul = verde
+  const [r2, g2, b2] = rgb(C.mixColors(['#ffcc00', '#007aff']));
+  assert.ok(g2 === 255 && r2 < g2 && b2 < g2, `verde: ${r2},${g2},${b2}`);
+  // un solo color: el mismo, con toda la luz
+  assert.equal(C.mixColors(['#ff3b30']).hex, '#ff3b30');
+  assert.equal(C.mixColors(['nada']), null);
+  assert.equal(C.mixColors(['#000000']).hex, '#ffffff');
+  // brillo: mismo tono que la mezcla pero sin pasar de la luminosidad pedida (visible sobre fondo claro)
+  const [gr, gg, gb] = C.glowRgb(['#ff3b30', '#007aff'], 0.6).split(', ').map(Number);
+  assert.ok(gb > gr && gr > gg, `lila intenso: ${gr},${gg},${gb}`);
+  assert.ok((Math.max(gr, gg, gb) + Math.min(gr, gg, gb)) / 2 / 255 <= 0.61);
+  const pale = C.glowRgb(['#ff3b30', '#34c759', '#007aff'], 0.6).split(', ').map(Number);
+  assert.ok((Math.max(...pale) + Math.min(...pale)) / 2 / 255 <= 0.61, `tres colores, visible: ${pale}`);
+  assert.equal(C.glowRgb([]), null);
 });
 
 test('validación de nombres y payloads', () => {

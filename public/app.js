@@ -1,8 +1,8 @@
 // app.js - interfaz de Quedamos. Sin frameworks. Nunca innerHTML con datos de usuario.
 import * as C from './core.js';
 import { newIdentity, identityFromPriv } from './crypto.js';
-import { SyncEngine, forgetSession } from './sync.js';
-import { openStore } from './store.js';
+import { SyncEngine, forgetSession, fetchClosed } from './sync.js';
+import { openStore, memoryStore } from './store.js';
 
 const root = document.getElementById('app');
 const toasts = document.getElementById('toasts');
@@ -46,8 +46,6 @@ const ICONS = {
   check: [['path', 'M5 12.5l4.5 4.5L19 7']],
   trash: [['path', 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13']],
   copy: [['path', 'M9 9h10v10H9zM5 15V5h10']],
-  repeat: [['path', 'M4 12a8 8 0 0 1 13.7-5.6L20 9M20 4v5h-5M20 12a8 8 0 0 1-13.7 5.6L4 15M4 20v-5h5']],
-  erase: [['path', 'M6 6l12 12M18 6L6 18']],
   link: [['path', 'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1']],
 };
 function icon(name) {
@@ -106,9 +104,72 @@ async function removeSession(sid) {
   await forgetSession(store, sid);
 }
 
+// Tu nombre y tu color: se eligen una vez y se proponen en cada quedada nueva.
+async function getProfile() {
+  const p = await store.get('profile');
+  return p && typeof p.name === 'string' ? { name: p.name, color: C.COLOR_IDS.includes(p.color) ? p.color : null } : null;
+}
+async function saveProfile(name, color) { await store.set('profile', { name, color }); }
+
+// Quedadas borradas por quien las creó: no se vuelven a abrir aunque alguien pulse un enlace viejo.
+async function markDeleted(sid) {
+  const list = ((await store.get('deleted')) || []).filter((x) => x !== sid);
+  list.unshift(sid);
+  await store.set('deleted', list.slice(0, 300));
+}
+async function isDeleted(sid) { return ((await store.get('deleted')) || []).includes(sid); }
+const isCreator = (session, me) => !!(session?.creator && me?.pub && me.pub === session.creator);
+
+/**
+ * Quien la creó borra la quedada para todos: se envía el aviso firmado y se quita de este móvil.
+ * Sin conexión, el aviso queda pendiente y se reintenta en segundo plano.
+ */
+async function deleteForAll(sid, data, title, me) {
+  const dec = C.decodeLink(data);
+  if (!dec) return;
+  const own = ctx?.session.id === sid ? ctx : null;
+  if (own) own.deleting = true;
+  const eng = own ? own.engine : new SyncEngine({ session: dec.session, store: memoryStore(), ...engineOpts });
+  const working = toast('Borrando para todos…', null, 12000);
+  let ok = false;
+  try {
+    if (!own) { await eng.init(); eng.start(); }
+    ok = await eng.closeForAll(me, 10000);
+  } catch (e) { console.error(e); }
+  const ev = eng.closeOut;
+  if (!own) eng.stop();
+  working();
+  if (!ok && ev) await addPendingClose({ id: sid, data, ev });
+  if (own) await closeCtx();
+  stopBg(sid);
+  await removeSession(sid);
+  await markDeleted(sid);
+  toast(ok ? `«${title}» se ha borrado para todos.` : `«${title}» se ha borrado. Los demás dejarán de verla cuando haya conexión.`);
+}
+async function addPendingClose(item) {
+  const list = ((await store.get('pendingClose')) || []).filter((x) => x.id !== item.id);
+  list.push(item);
+  await store.set('pendingClose', list);
+}
+async function dropPendingClose(sid) {
+  await store.set('pendingClose', ((await store.get('pendingClose')) || []).filter((x) => x.id !== sid));
+}
+
 // Envíos que quedaron en cola en quedadas que no están abiertas: se mandan en segundo plano (máx. 60 s por intento).
 const bgEngines = new Map();
 async function flushPending() {
+  // avisos de borrado que no llegaron a salir
+  for (const pc of (await store.get('pendingClose')) || []) {
+    const key = `close:${pc.id}`;
+    if (bgEngines.has(key)) continue;
+    const dec = C.decodeLink(pc.data); if (!dec) { await dropPendingClose(pc.id); continue; }
+    const eng = new SyncEngine({ session: dec.session, store: memoryStore(), ...engineOpts });
+    bgEngines.set(key, eng);
+    (async () => {
+      try { await eng.init(); eng.start(); if (await eng.sendClose(pc.ev, 60000)) await dropPendingClose(pc.id); } catch (e) { console.error(e); }
+      eng.stop(); if (bgEngines.get(key) === eng) bgEngines.delete(key);
+    })();
+  }
   for (const s of await listSessions()) {
     if (!(await store.get(`out:${s.id}`))) continue;
     if (bgEngines.has(s.id) || ctx?.session.id === s.id) continue;
@@ -160,6 +221,7 @@ async function route() {
   const { session, priv } = dec;
   const data = C.encodeLink(session);
   if (priv) history.replaceState(null, '', location.pathname + location.search + '#' + data); // la clave privada no se queda en la barra
+  if (await isDeleted(session.id)) { renderGone(session.title); return; }
   let me = await store.get(meKey(session.id));
   if (priv && (!me || me.priv !== priv)) {
     me = { ...identityFromPriv(priv), name: '', color: null, slots: C.slotsToB64(C.emptySlots(session)), updatedAt: 0, dirty: false, restored: true };
@@ -196,11 +258,18 @@ async function renderHome() {
   window.scrollTo(0, 0);
   const sessions = await listSessions();
   const pending = new Set();
-  for (const s of sessions) if ((await store.get(`out:${s.id}`)) || (await store.get(meKey(s.id)))?.dirty) pending.add(s.id);
+  const created = new Set(); // quedadas que creé yo: el borrado es para todos
+  for (const s of sessions) {
+    const me = await store.get(meKey(s.id));
+    if ((await store.get(`out:${s.id}`)) || me?.dirty) pending.add(s.id);
+    if (isCreator(C.decodeLink(s.data)?.session, me)) created.add(s.id);
+  }
   flushPending().catch((e) => console.error(e));
-  let n = 4; let color = 'blue';
-  const title = h('input', { id: 'f-title', class: 'input bare', maxlength: C.TITLE_MAX, placeholder: 'Cena del viernes, partido…', autocomplete: 'off', enterkeyhint: 'next', 'aria-label': 'Título' });
-  const name = h('input', { id: 'f-name', class: 'input bare', maxlength: C.NAME_MAX, placeholder: 'Tu nombre', autocomplete: 'given-name', enterkeyhint: 'done', 'aria-label': 'Tu nombre' });
+  checkClosed(sessions);
+  const profile = await getProfile();
+  let n = 4; let color = profile?.color || 'blue';
+  const name = h('input', { id: 'f-name', class: 'input bare', maxlength: C.NAME_MAX, placeholder: 'Tu nombre', autocomplete: 'given-name', enterkeyhint: 'next', 'aria-label': 'Tu nombre', value: profile?.name || null });
+  const title = h('input', { id: 'f-title', class: 'input bare', maxlength: C.TITLE_MAX, placeholder: 'Añadir tarea', autocomplete: 'off', enterkeyhint: 'done', 'aria-label': 'Tarea' });
   const err = h('p', { class: 'form-error', role: 'alert' });
   const nOut = h('output', { class: 'stepper-value', 'aria-live': 'polite', text: n });
   const setN = (v) => { n = Math.min(C.MAX_PEOPLE, Math.max(C.MIN_PEOPLE, v)); nOut.textContent = n; minus.disabled = n <= C.MIN_PEOPLE; plus.disabled = n >= C.MAX_PEOPLE; };
@@ -216,49 +285,99 @@ async function renderHome() {
   async function create(e) {
     e.preventDefault();
     err.textContent = '';
-    const t = C.validateTitle(title.value);
-    if (!t.ok) { err.textContent = t.error; title.focus(); return; }
     const nm = C.validateName(name.value);
     if (!nm.ok) { err.textContent = nm.error; name.focus(); return; }
+    const t = C.validateTitle(title.value);
+    if (!t.ok) { err.textContent = t.error; title.focus(); return; }
     const startH = Number(from.value); const endH = Number(to.value);
     if (endH <= startH) { err.textContent = 'La hora final tiene que ser posterior a la inicial.'; return; }
-    const session = C.newSession({ title: t.value, n, startH, endH });
-    const me = { ...newIdentity(), name: nm.value, color, slots: C.slotsToB64(C.emptySlots(session)), updatedAt: Date.now(), dirty: false, created: true };
+    const id = newIdentity();
+    const session = C.newSession({ title: t.value, n, startH, endH, creator: id.pub });
+    const me = { ...id, name: nm.value, color, slots: C.slotsToB64(C.emptySlots(session)), updatedAt: Date.now(), dirty: false, created: true };
+    await saveProfile(nm.value, color);
     await store.set(meKey(session.id), me);
     location.hash = C.encodeLink(session);
   }
 
+  const removeBtn = (s) => h('button', {
+    type: 'button', class: 'icon-btn subtle',
+    'aria-label': created.has(s.id) ? `Borrar «${s.title}» para todos` : `Quitar «${s.title}» de este móvil`,
+    onclick: async () => {
+      if (created.has(s.id)) {
+        if (!confirm(`¿Borrar «${s.title}»? Desaparecerá también para los demás.`)) return;
+        await deleteForAll(s.id, s.data, s.title, await store.get(meKey(s.id)));
+      } else {
+        if (!confirm(`¿Quitar «${s.title}» de este móvil?`)) return;
+        await removeSession(s.id);
+      }
+      renderHome();
+    },
+  }, icon('trash'));
   const list = sessions.length
-    ? group('Tus quedadas', sessions.map((s) => h('div', { class: 'row link-row' },
+    ? group('Tus quedadas', sessions.map((s) => h('div', { class: 'row link-row', 'data-sid': s.id },
       h('a', { class: 'list-main', href: '#' + s.data },
         h('span', { class: 'list-title', text: s.title }),
-        h('span', { class: 'list-sub', text: `${C.formatDayShort(s.startDate)} – ${C.formatDayShort(C.addDays(s.startDate, C.DAYS - 1))}, ${s.n} personas` }),
+        h('span', { class: 'list-sub', text: `${C.formatDayShort(s.startDate)} – ${C.formatDayShort(C.addDays(s.startDate, C.DAYS - 1))} · ${s.n} personas` }),
         pending.has(s.id) ? h('span', { class: 'list-sub warn', 'data-pending': s.id, text: 'Cambios sin enviar' }) : null),
-      h('button', {
-        type: 'button', class: 'icon-btn subtle', 'aria-label': `Quitar «${s.title}» de este móvil`,
-        onclick: async () => { if (!confirm(`¿Quitar «${s.title}» de este móvil? Se borra tu copia local y tu identidad en ella: para volver a entrar como tú necesitarás tu enlace personal (Ajustes de la quedada).`)) return; await removeSession(s.id); renderHome(); },
-      }, icon('trash')))))
+      removeBtn(s))))
     : null;
+  if (list) list.classList.add('my-list');
 
   const iosApp = isIOS && standalone();
   root.replaceChildren(h('main', { class: 'screen home' },
-    h('header', { class: 'brand' }, brandMark(),
-      h('h1', { class: 'large-title', text: 'Quedamos' }),
-      h('p', { class: 'brand-sub', text: 'Cada uno marca cuándo puede. Veis al momento a qué hora coincidís.' })),
+    h('header', { class: 'brand' }, brandMark(), h('h1', { class: 'large-title', text: 'Quedamos' })),
     memoryBanner(),
     iosApp && !sessions.length ? pasteLinkCard(true) : null,
-    list,
     h('form', { class: 'create', onsubmit: create, novalidate: true },
+      group('Tú', row(null, name), palWrap),
       group('Nueva quedada',
         row(null, title),
         row('Personas', h('div', { class: 'stepper', role: 'group', 'aria-label': 'Personas, contándote a ti' }, minus, nOut, plus)),
         row('Horas', h('div', { class: 'range' }, from, h('span', { class: 'muted', text: 'a' }), to))),
-      group('Tú', row(null, name), palWrap),
       err,
       h('button', { type: 'submit', class: 'btn primary wide' }, 'Crear quedada')),
-    standalone() && (sessions.length || !iosApp) ? pasteLinkCard(false) : null,
-    h('p', { class: 'foot', text: 'Sin cuentas. Se guarda en este móvil y viaja cifrado: solo lo ve quien tiene el enlace.' })));
+    list,
+    standalone() && (sessions.length || !iosApp) ? pasteLinkCard(false) : null));
   setN(n);
+}
+
+// Quita del inicio las quedadas que quien las creó ha borrado (como mucho una comprobación cada 20 s).
+let lastClosedCheck = 0;
+function checkClosed(sessions) {
+  if (!sessions.length || Date.now() - lastClosedCheck < 20000) return;
+  lastClosedCheck = Date.now();
+  const bySid = new Map();
+  for (const s of sessions) { const dec = C.decodeLink(s.data); if (dec?.session.creator) bySid.set(s.id, { ...s, session: dec.session }); }
+  if (!bySid.size) return;
+  fetchClosed([...bySid.values()].map((x) => x.session), {
+    ...engineOpts,
+    onClosed: async (sid) => {
+      const s = bySid.get(sid);
+      if (!s || ctx?.session.id === sid) return;
+      stopBg(sid);
+      await removeSession(sid);
+      await markDeleted(sid);
+      const rowEl = document.querySelector(`[data-sid="${sid}"]`);
+      if (rowEl) {
+        const grp = rowEl.closest('.my-list');
+        rowEl.remove();
+        if (grp && !grp.querySelector('[data-sid]')) grp.remove();
+      }
+      toast(`«${s.title}» se ha borrado.`);
+    },
+  }).catch((e) => console.error(e));
+}
+
+// Quedada borrada por quien la creó.
+function renderGone(title) {
+  document.title = 'Quedamos';
+  window.scrollTo(0, 0);
+  root.replaceChildren(h('main', { class: 'screen gone' },
+    h('nav', { class: 'navrow' }, h('a', { class: 'icon-btn', href: '#', 'aria-label': 'Inicio' }, icon('back'))),
+    h('header', { class: 'join-head' }, brandMark(),
+      h('h1', { class: 'large-title', text: 'Quedada borrada' }),
+      h('p', { class: 'muted', text: `Quien creó «${title}» la ha borrado.` })),
+    h('a', { class: 'btn primary wide', href: '#' }, 'Ir al inicio')));
 }
 
 // En la app instalada no hay barra de direcciones (y en iPhone no comparte datos con Safari): pegar un enlace.
@@ -304,9 +423,12 @@ async function openSession(session, me) {
   stopBg(session.id);
   const engine = new SyncEngine({ session, store, ...engineOpts });
   ctx = { session, engine, me, slots: me ? C.slotsFromB64(session, me.slots) : C.emptySlots(session), els: {}, view: null, week: null, focus: null };
+  const profile = await getProfile();
   await engine.init();
   if (ctx?.engine !== engine) return;
+  ctx.profile = profile;
   ctx.unsub = engine.on(onEngine);
+  if (engine.closed) { sessionClosed(); return; }
   engine.start();
   adoptRemote();
   document.title = `${session.title} · Quedamos`;
@@ -333,7 +455,20 @@ function onEngine(type, d) {
     fillSendbar(); fillPeople();
   } else if (type === 'conn' || type === 'synced') {
     if (ctx.view === 'join') fillJoinLive(); else fillConn();
+  } else if (type === 'closed') {
+    if (!ctx.deleting) sessionClosed();
   }
+}
+
+/** Ha llegado el aviso de que quien la creó la ha borrado: fuera de este móvil. */
+async function sessionClosed() {
+  if (!ctx) return;
+  const { session } = ctx;
+  await closeCtx();
+  stopBg(session.id);
+  await removeSession(session.id);
+  await markDeleted(session.id);
+  renderGone(session.title);
 }
 
 /** Si llega una versión más nueva de mi propio horario (otro móvil o identidad recuperada), se adopta. */
@@ -428,8 +563,8 @@ function renderJoin() {
   ctx.view = 'join';
   const { session } = ctx;
   const restored = !!ctx.me?.restored;
-  let color = null; let picked = false;
-  const name = h('input', { class: 'input bare', maxlength: C.NAME_MAX, placeholder: 'Tu nombre', autocomplete: 'given-name', enterkeyhint: 'done', 'aria-label': 'Tu nombre' });
+  let color = ctx.profile?.color || null; let picked = false;
+  const name = h('input', { class: 'input bare', maxlength: C.NAME_MAX, placeholder: 'Tu nombre', autocomplete: 'given-name', enterkeyhint: 'done', 'aria-label': 'Tu nombre', value: ctx.profile?.name || null });
   const err = h('p', { class: 'form-error', role: 'alert' });
   const who = h('div', { class: 'chips' });
   const palWrap = h('div', { class: 'row-block' });
@@ -461,6 +596,7 @@ function renderJoin() {
     // Identidad recuperada cuyo horario aún no ha llegado: se mantiene `restored` para fusionarlo cuando llegue.
     ctx.me = { ...base, name: nm.value, color, updatedAt: base.restored ? 0 : Date.now(), dirty: false, restored: !!base.restored };
     saveMe(true);
+    saveProfile(nm.value, color).catch(() => {});
     renderSession();
   }
 
@@ -484,7 +620,7 @@ function renderJoin() {
       group('Tú', row(null, name), palWrap),
       err,
       h('button', { type: 'submit', class: 'btn primary wide' }, 'Entrar y marcar mis horas')),
-    note ? h('p', { class: 'foot', text: note }) : h('p', { class: 'foot', text: 'Sin cuentas. Tu horario viaja cifrado: solo lo ve quien tiene el enlace.' })));
+    note ? h('p', { class: 'foot', text: note }) : null));
 }
 function fillJoinLive() { ctx.drawJoin?.(); }
 
@@ -522,13 +658,10 @@ function renderSession() {
   };
   els.board = h('section', { class: 'board', 'aria-label': 'Rejilla de horas' },
     h('div', { class: 'week-nav' }, els.prev, h('div', { class: 'week-mid' }, els.weekLabel, els.dots), els.next),
-    h('div', { class: 'tools' },
-      h('button', { type: 'button', class: 'tool', onclick: repeatThisWeek }, icon('repeat'), 'Repetir esta semana'),
-      h('button', { type: 'button', class: 'tool', onclick: clearThisWeek }, icon('erase'), 'Borrar semana')),
     els.dayHead,
     h('div', { class: 'board-body' }, els.hours, els.cells),
-    h('p', { class: 'board-tip', text: 'Toca o arrastra sobre las horas para marcar cuándo puedes. Para desplazarte, desliza por la columna de horas o fuera de la rejilla.' }));
-  root.replaceChildren(h('main', { class: 'screen session' },
+    h('p', { class: 'board-tip', text: 'Toca o arrastra para marcar. Para desplazarte, desliza por la columna de horas.' }));
+  root.replaceChildren(els.main = h('main', { class: 'screen session' },
     h('nav', { class: 'navrow' },
       h('a', { class: 'icon-btn', href: '#', 'aria-label': 'Inicio' }, icon('back')),
       h('span', { class: 'nav-spacer' }),
@@ -647,7 +780,7 @@ function fillGrid({ dir = 0 } = {}) {
   els.prev.disabled = w <= 0;
   els.next.disabled = w >= nW - 1;
   els.dots.replaceChildren(...Array.from({ length: nW }, (_, i) => h('button', {
-    type: 'button', role: 'tab', class: `wdot${i === w ? ' on' : ''}${C.weekHasFull(session, counts, required, i, editableFrom) ? ' gold' : ''}`,
+    type: 'button', role: 'tab', class: `wdot${i === w ? ' on' : ''}${C.weekHasFull(session, counts, required, i, editableFrom) ? ' glow' : ''}`,
     'aria-selected': String(i === w), 'aria-label': `Semana del ${weekLabel(session, i)}`, onclick: () => setWeek(i),
   }, h('span'))));
 
@@ -667,10 +800,12 @@ function fillGrid({ dir = 0 } = {}) {
   const isFullAt = (d, k) => d >= 0 && d < C.DAYS && k >= 0 && k < hours && d >= today && C.isFull(counts[d * hours + k], required);
   const focusP = ctx.focus ? ps.find((p) => p.pid === ctx.focus) : null;
   const cells = [];
-  const lanes = ps.length;
+  ctx.gridPs = ps; // para repintar casillas mientras se arrastra
   els.board.style.setProperty('--rows', hours);
-  els.board.style.setProperty('--lanes', lanes);
-  els.cells.className = `cells ${colorClass(ctx.me.color)}${focusP ? ' focusing' : ''}`;
+  // brillo de "coincidís todos": la mezcla de los colores de todos (rojo + azul = lila)
+  const glow = C.glowRgb(ps.map((p) => colorHex(p.color)), 0.68);
+  if (glow) els.main.style.setProperty('--glow-rgb', glow); else els.main.style.removeProperty('--glow-rgb');
+  els.cells.className = `cells${focusP ? ' focusing' : ''}`;
   for (let k = 0; k < hours; k++) {
     for (let wd = 0; wd < 7; wd++) {
       const d = first + wd;
@@ -679,25 +814,26 @@ function fillGrid({ dir = 0 } = {}) {
       const past = d < today;
       const mine = !!C.getBit(ctx.slots, i);
       const full = isFullAt(d, k);
+      const avail = ps.filter((p) => C.getBit(p.slots, i));
+      const fill = C.cellFill(avail.map((p) => p.color));
       let cls = 'cell';
       if (past) cls += ' past';
       if (mine) cls += ' mine';
+      if (fill) cls += ' has';
       if (full) {
         cls += ' full';
+        // horas seguidas del mismo día: un solo bloque (las franjas continúan sin cortes)
         if (isFullAt(d, k - 1)) cls += ' fu';
         if (isFullAt(d, k + 1)) cls += ' fd';
-        if (isFullAt(d - 1, k) && wd > 0) cls += ' fl';
-        if (isFullAt(d + 1, k) && wd < 6) cls += ' fr';
       }
       if (focusP && C.getBit(focusP.slots, i)) cls += ' hl';
-      const avail = ps.filter((p) => C.getBit(p.slots, i));
       const hour = session.startH + k;
       const label = `${C.formatDayShort(C.dayDate(session, d))}, ${C.formatHour(hour)}. ${avail.length ? avail.map((p) => (p.me ? 'tú' : p.name)).join(', ') : 'nadie'}${full ? '. Coincidís todos' : ''}`;
       cells.push(h('button', {
         type: 'button', role: 'gridcell', class: cls, 'data-i': past ? null : i, 'data-d': d, 'data-k': k,
-        style: { '--heat': required ? (avail.length / required).toFixed(3) : '0' },
+        style: fill ? { '--fill': fill } : null,
         'aria-pressed': String(mine), 'aria-label': label, disabled: past || null, tabindex: '-1',
-      }, h('span', { class: 'lanes', 'aria-hidden': 'true' }, ps.map((p) => h('i', { class: C.getBit(p.slots, i) ? `on ${colorClass(p.color)}` : null })))));
+      }));
     }
   }
   // un único elemento enfocable con el teclado: la primera celda editable
@@ -728,8 +864,10 @@ function bindGrid(cellsEl) {
     C.setBit(ctx.slots, i, on);
     c.classList.toggle('mine', on);
     c.setAttribute('aria-pressed', String(on));
-    const lane = c.querySelector('.lanes > i'); // la primera franja soy yo
-    if (lane) lane.className = on ? `on ${colorClass(ctx.me.color)}` : '';
+    // repintar el reparto de colores de la casilla (mis horas están en ctx.slots, que es lo que lee mi fila)
+    const fill = C.cellFill((ctx.gridPs || []).filter((p) => C.getBit(p.slots, i)).map((p) => p.color));
+    if (fill) c.style.setProperty('--fill', fill); else c.style.removeProperty('--fill');
+    c.classList.toggle('has', !!fill);
     return true;
   };
   const paint = () => {
@@ -801,25 +939,10 @@ function bindGrid(cellsEl) {
   });
 }
 
-function undoable(before, msg) {
-  markDirty();
-  toast(msg, { label: 'Deshacer', fn: () => { if (!ctx) return; ctx.slots = before; markDirty(); } });
-}
-function repeatThisWeek() {
-  const { session } = ctx;
-  const before = new Uint8Array(ctx.slots);
-  const n = C.repeatWeek(session, ctx.slots, ctx.week, Math.max(0, C.todayIndex(session)));
-  if (!n) { toast('Las demás semanas ya tienen este mismo horario.'); return; }
-  vibrate(10);
-  undoable(before, 'Copiado a las demás semanas.');
-}
-function clearThisWeek() {
-  const { session } = ctx;
-  const before = new Uint8Array(ctx.slots);
-  const n = C.clearWeek(session, ctx.slots, ctx.week, Math.max(0, C.todayIndex(session)));
-  if (!n) { toast('No tienes horas marcadas en esta semana.'); return; }
-  vibrate(10);
-  undoable(before, `${n} ${n === 1 ? 'hora borrada' : 'horas borradas'}.`);
+// Color real (#rrggbb) de una persona según el modo claro/oscuro: se lee de las variables --k-<color> de styles.css.
+function colorHex(id) {
+  const c = C.COLOR_IDS.includes(id) ? id : 'graphite';
+  return getComputedStyle(document.documentElement).getPropertyValue(`--k-${c}`).trim();
 }
 
 function flashBlock(b) {
@@ -892,6 +1015,7 @@ function renderSettings() {
     if (!nm.ok) { err.textContent = nm.error; return; }
     if (nm.value === me.name && color === me.color) { back(); return; }
     me.name = nm.value; me.color = color;
+    saveProfile(nm.value, color).catch(() => {});
     markDirty();
     back();
     toast('Guardado. Pulsa Enviar para que lo vea el grupo.');
@@ -913,13 +1037,23 @@ function renderSettings() {
       iosSafari ? h('p', { class: 'group-foot', text: 'En iPhone, la app añadida a la pantalla de inicio guarda sus datos aparte de Safari. Si la usas, copia antes tu enlace personal y pégalo dentro de la app.' }) : null,
       inAppBrowser ? h('p', { class: 'group-foot', text: 'Estás en el navegador de otra app. Si pasas a Safari o Chrome, copia antes tu enlace personal y ábrelo allí.' }) : null),
     h('section', { class: 'group' },
-      h('div', { class: 'group-body glass' }, h('button', { type: 'button', class: 'row action danger', onclick: leave }, icon('trash'), 'Quitar de este móvil')))));
+      h('div', { class: 'group-body glass' }, isCreator(ctx.session, me)
+        ? h('button', { type: 'button', class: 'row action danger', onclick: deleteMine }, icon('trash'), 'Borrar quedada')
+        : h('button', { type: 'button', class: 'row action danger', onclick: leave }, icon('trash'), 'Quitar de este móvil')),
+      isCreator(ctx.session, me) ? h('p', { class: 'group-foot', text: 'Desaparecerá también para los demás.' }) : null)));
+}
+async function deleteMine(e) {
+  if (!ctx?.me || !confirm(`¿Borrar «${ctx.session.title}»? Desaparecerá también para los demás.`)) return;
+  e?.currentTarget && (e.currentTarget.disabled = true);
+  const { session, me } = ctx;
+  await deleteForAll(session.id, C.encodeLink(session), session.title, me);
+  location.hash = '';
 }
 async function copyPersonal() {
   toast((await copyText(personalUrl())) ? 'Enlace personal copiado. No lo compartas con nadie.' : 'No se ha podido copiar.');
 }
 async function leave() {
-  if (!confirm('¿Quitar esta quedada de este móvil? Los demás seguirán viendo lo que ya enviaste. Si quieres volver a entrar como tú, copia antes tu enlace personal: sin él aparecerías como otra persona.')) return;
+  if (!confirm('¿Quitar esta quedada de este móvil? Los demás seguirán viendo lo que ya enviaste.')) return;
   const sid = ctx.session.id;
   await closeCtx();
   await removeSession(sid);

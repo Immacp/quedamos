@@ -10,6 +10,22 @@ const tagVals = (ev, name) => ev.tags.filter((t) => t[0] === name).map((t) => t[
 export const MAX_MESSAGE = 32 * 1024;
 export const MAX_CONTENT = 4096;
 
+// Aviso de "quedada borrada": evento reemplazable d = <topic>:closed, firmado por quien la creó
+// (session.creator, que va en el enlace) y con contenido cifrado {v:1, closed:true}. Cualquier otra firma se ignora.
+const closedTag = (topic) => `${topic}:closed`;
+async function checkClose(ev, { session, encKey, topic, nowMs }) {
+  try {
+    if (!session.creator || !ev || typeof ev !== 'object' || ev.kind !== KIND || ev.pubkey !== session.creator) return false;
+    if (typeof ev.content !== 'string' || ev.content.length > MAX_CONTENT || !Array.isArray(ev.tags) || ev.tags.length > 16) return false;
+    const ds = tagVals(ev, 'd'); const ts = tagVals(ev, 't');
+    if (ds.length !== 1 || ds[0] !== closedTag(topic) || !ts.includes(topic)) return false;
+    if (!Number.isInteger(ev.created_at) || ev.created_at > Math.floor(nowMs / 1000) + 86400) return false;
+    if (!(await verifyEvent(ev))) return false;
+    const p = await decryptJSON(encKey, ev.content);
+    return !!(p && p.v === 1 && p.closed === true);
+  } catch { return false; }
+}
+
 export class SyncEngine {
   constructor({
     session, store, relays = RELAYS,
@@ -25,6 +41,8 @@ export class SyncEngine {
     this.events = {}; // pid -> evento firmado original (el más nuevo)
     this.pins = {}; // pid -> pubkey fijada
     this.outbox = null; // evento propio pendiente de confirmar
+    this.closed = null; // aviso de borrado recibido (válido)
+    this.closeOut = null; // aviso de borrado propio que se está enviando
     this.status = 'idle'; // idle | sending | sent | queued
     this.synced = false; // algún relé ya ha respondido EOSE
     this.conns = new Map();
@@ -47,6 +65,7 @@ export class SyncEngine {
     this.events = (await this.store.get(keyOf('ev', sid))) || {};
     this.pins = (await this.store.get(keyOf('pins', sid))) || {};
     this.outbox = (await this.store.get(keyOf('out', sid))) || null;
+    this.closed = (await this.store.get(keyOf('closed', sid))) || null;
     for (const [pid, ev] of Object.entries(this.events)) {
       const payload = validatePayload(await decryptJSON(this.encKey, ev.content), this.session);
       if (payload && payload.participantId === pid) this.participants.set(pid, this._entry(payload, ev));
@@ -139,6 +158,7 @@ export class SyncEngine {
       // no se pierde uno enviado tarde con created_at antiguo (cola sin conexión) ni por un reloj adelantado.
       const filter = { kinds: [KIND], '#t': [this.topic], limit: 500 };
       this._send(conn, ['REQ', conn.subId, filter]);
+      if (this.closeOut) this._send(conn, ['EVENT', this.closeOut]);
       if (this.outbox) this._sendOutboxTo(conn);
       this.emit('conn', this.connection());
     };
@@ -180,6 +200,7 @@ export class SyncEngine {
       if (!conn.gossipDone) { conn.gossipDone = true; this.queue.then(() => this._gossip(conn)); }
     } else if (type === 'OK') {
       const [, id, ok, reason] = msg;
+      if (this.closeOut && id === this.closeOut.id && ok === true) this._closeAck?.();
       if (this.outbox && id === this.outbox.id) {
         if (ok === true) this._markSent(conn.url);
         else {
@@ -230,6 +251,7 @@ export class SyncEngine {
     if (!ts.includes(this.topic) || ds.length !== 1) return false;
     const d = ds[0];
     if (typeof d !== 'string' || !d.startsWith(this.topic + ':')) return false;
+    if (d === closedTag(this.topic)) return this._ingestClosed(ev);
     const pid = d.slice(this.topic.length + 1);
     if (!PID_RE.test(pid)) return false;
     if (this.events[pid] && this.events[pid].id === ev.id) return false;
@@ -251,6 +273,38 @@ export class SyncEngine {
     await this.store.set(keyOf('pins', sid), this.pins);
     this.emit('participants', { pid });
     return true;
+  }
+
+  async _ingestClosed(ev) {
+    if (this.closed) return false;
+    if (!(await checkClose(ev, { session: this.session, encKey: this.encKey, topic: this.topic, nowMs: this.now() }))) return false;
+    this.closed = ev;
+    await this.store.set(keyOf('closed', this.session.id), ev);
+    this.emit('closed', {});
+    return true;
+  }
+
+  // ---------- borrar para todos (solo quien la creó) ----------
+  /** Firma el aviso de borrado y lo envía. Resuelve true en cuanto un relé lo confirma; false si se agota el tiempo. */
+  async closeForAll(identity, timeout = 10000) {
+    if (!this.ready) await this.init();
+    if (!this.session.creator || identity?.pub !== this.session.creator) throw new Error('Solo quien creó la quedada puede borrarla para todos.');
+    const content = await encryptJSON(this.encKey, { v: 1, closed: true });
+    const ev = await signEvent({ kind: KIND, tags: [['d', closedTag(this.topic)], ['t', this.topic]], content, created_at: Math.floor(this.now() / 1000) }, identity.priv);
+    return this.sendClose(ev, timeout);
+  }
+
+  /** Envía (o reintenta) un aviso de borrado ya firmado. */
+  sendClose(ev, timeout = 10000) {
+    this.closeOut = ev;
+    return new Promise((resolve) => {
+      let timer = null;
+      const ack = (ok) => { clearTimeout(timer); if (this._closeAck === ackTrue) this._closeAck = null; resolve(ok); };
+      const ackTrue = () => ack(true);
+      timer = setTimeout(() => ack(false), timeout);
+      this._closeAck = ackTrue;
+      for (const c of this.conns.values()) this._send(c, ['EVENT', ev]);
+    });
   }
 
   // ---------- envío ----------
@@ -317,5 +371,54 @@ export class SyncEngine {
 
 /** Borra del almacenamiento todo lo de una sesión. */
 export async function forgetSession(store, sid) {
-  for (const k of ['ev', 'pins', 'out', 'seen']) await store.del(keyOf(k, sid));
+  for (const k of ['ev', 'pins', 'out', 'seen', 'closed']) await store.del(keyOf(k, sid));
+}
+
+/**
+ * Comprueba de una vez (una conexión por relé) qué quedadas han sido borradas por quien las creó.
+ * sessions: objetos de sesión (solo cuentan los que tienen creator). Llama a onClosed(id) en cuanto
+ * confirma una y devuelve el conjunto de ids borrados.
+ */
+export async function fetchClosed(sessions, { relays = RELAYS, connect = (url) => new WebSocket(url), timeout = 8000, now = () => Date.now(), onClosed = () => {} } = {}) {
+  const want = new Map(); // d -> {session, encKey, topic}
+  for (const s of sessions) {
+    if (!s || !s.creator) continue;
+    const { encKey, topic } = await deriveSessionKeys(s.key, s.id);
+    want.set(closedTag(topic), { session: s, encKey, topic });
+  }
+  const found = new Set();
+  if (!want.size) return found;
+  const filter = { kinds: [KIND], authors: [...new Set([...want.values()].map((w) => w.session.creator))], '#d': [...want.keys()], limit: 200 };
+  const ask = (url) => new Promise((resolve) => {
+    let ws = null; let finished = false; const checks = [];
+    const sub = 'c' + Math.random().toString(36).slice(2, 10);
+    const end = async () => {
+      if (finished) return;
+      finished = true; clearTimeout(timer);
+      await Promise.allSettled(checks);
+      try { ws?.close(); } catch { /* nada */ }
+      resolve();
+    };
+    const timer = setTimeout(end, timeout);
+    try { ws = connect(url); } catch { end(); return; }
+    ws.onopen = () => { try { ws.send(JSON.stringify(['REQ', sub, filter])); } catch { end(); } };
+    ws.onmessage = (e) => {
+      const data = typeof e.data === 'string' ? e.data : String(e.data);
+      if (data.length > MAX_MESSAGE) return;
+      let msg; try { msg = JSON.parse(data); } catch { return; }
+      if (!Array.isArray(msg) || msg[1] !== sub) return;
+      if (msg[0] === 'EOSE') { end(); return; }
+      const ev = msg[0] === 'EVENT' ? msg[2] : null;
+      if (!ev || typeof ev !== 'object' || !Array.isArray(ev.tags)) return;
+      const w = want.get(ev.tags.find((t) => Array.isArray(t) && t[0] === 'd')?.[1]);
+      if (!w || found.has(w.session.id)) return;
+      checks.push(checkClose(ev, { ...w, nowMs: now() }).then((ok) => {
+        if (ok && !found.has(w.session.id)) { found.add(w.session.id); try { onClosed(w.session.id); } catch { /* nada */ } }
+      }));
+    };
+    ws.onclose = () => { end(); };
+    ws.onerror = () => { /* llega onclose */ };
+  });
+  await Promise.all(relays.map(ask));
+  return found;
 }

@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { FakeRelay } from './fake-relay.mjs';
-import { SyncEngine } from '../public/sync.js';
+import { SyncEngine, fetchClosed, forgetSession } from '../public/sync.js';
 import { memoryStore } from '../public/store.js';
 import * as C from '../public/core.js';
 import * as K from '../public/crypto.js';
@@ -196,6 +196,80 @@ test('al volver de segundo plano llegan eventos con created_at antiguo (cola sin
     A.resume();
     await until(() => names(A).join() === 'Bea,Dani,Eli', 3000, 'A recibe a Bea y Eli tras volver');
   } finally { for (const e of [A, D, B, E]) e.stop(); await r.close(); }
+});
+
+test('quien crea la quedada la borra: desaparece para todos (también para quien llega tarde); nadie más puede borrarla', async () => {
+  const r = await new FakeRelay().listen();
+  const owner = K.newIdentity();
+  const S = C.newSession({ title: 'Para borrar', n: 2, startDate: '2026-11-16', creator: owner.pub });
+  const other = C.newSession({ title: 'Otra', n: 2, startDate: '2026-11-16', creator: K.newIdentity().pub });
+  const legacy = C.newSession({ title: 'Sin creador', n: 2, startDate: '2026-11-16' });
+  const mk = () => { const e = new SyncEngine({ session: S, store: memoryStore(), relays: [r.url], ...fast }); engines.push(e); return e; };
+  const A = mk(); const B = mk();
+  try {
+    for (const e of [A, B]) { await e.init(); e.start(); }
+    await until(() => A.connection().open === 1 && B.connection().open === 1, 3000, 'conectados');
+    const bea = K.newIdentity();
+    await B.publish({ name: 'Bea', color: 'blue', slots: C.emptySlots(S), updatedAt: Date.now() }, bea);
+    await until(() => names(A).includes('Bea'), 3000, 'A ve a Bea');
+
+    // Bea (no es la creadora) no puede borrarla: ni con la API ni falsificando el aviso
+    await assert.rejects(() => B.closeForAll(bea), /Solo quien creó/);
+    const fake = await K.signEvent({ kind: C.KIND, tags: [['d', `${A.topic}:closed`], ['t', A.topic]], content: await K.encryptJSON(A.encKey, { v: 1, closed: true }), created_at: Math.floor(Date.now() / 1000) }, bea.priv);
+    r.inject(fake);
+    await wait(300);
+    assert.equal(A.closed, null);
+    assert.equal(await A.ingest(fake), false);
+
+    // la creadora la borra: B lo recibe en vivo
+    let bGotClosed = false;
+    B.on((type) => { if (type === 'closed') bGotClosed = true; });
+    assert.equal(await A.closeForAll(owner, 3000), true, 'un relé confirma el borrado');
+    await until(() => bGotClosed && B.closed, 3000, 'B recibe el borrado');
+
+    // alguien que abre el enlace después también se entera
+    const late = mk();
+    await late.init(); late.start();
+    await until(() => late.closed, 3000, 'quien llega tarde ve que está borrada');
+
+    // comprobación desde el inicio: una conexión por relé para varias quedadas a la vez
+    const seen = [];
+    const found = await fetchClosed([S, other, legacy], { relays: [r.url], timeout: 3000, onClosed: (id) => seen.push(id) });
+    assert.deepEqual([...found], [S.id]);
+    assert.deepEqual(seen, [S.id]);
+
+    // el aviso queda guardado y se olvida al quitar la quedada del móvil
+    const st = memoryStore();
+    const C2 = new SyncEngine({ session: S, store: st, relays: [r.url], ...fast }); engines.push(C2);
+    await C2.init(); C2.start();
+    await until(() => C2.closed, 3000, 'C2 recibe el borrado');
+    C2.stop();
+    assert.ok(await st.get(`closed:${S.id}`));
+    await forgetSession(st, S.id);
+    assert.equal(await st.get(`closed:${S.id}`), undefined);
+  } finally { for (const e of engines) e.stop(); await r.close(); }
+});
+
+test('el aviso de borrado firmado se reenvía tal cual si no salió (sin conexión)', async () => {
+  const owner = K.newIdentity();
+  const S = C.newSession({ title: 'Sin red', n: 2, startDate: '2026-11-16', creator: owner.pub });
+  const r = await new FakeRelay().listen();
+  const port = r.port; const url = r.url;
+  await r.close();
+  const A = new SyncEngine({ session: S, store: memoryStore(), relays: [url], ...fast }); engines.push(A);
+  await A.init(); A.start();
+  assert.equal(await A.closeForAll(owner, 300), false, 'sin relés no se confirma');
+  const ev = A.closeOut;
+  A.stop();
+  const r2 = await new FakeRelay().listen(port);
+  try {
+    const A2 = new SyncEngine({ session: S, store: memoryStore(), relays: [url], ...fast }); engines.push(A2);
+    await A2.init(); A2.start();
+    assert.equal(await A2.sendClose(ev, 3000), true, 'se envía al volver la red');
+    const found = await fetchClosed([S], { relays: [url], timeout: 3000 });
+    assert.ok(found.has(S.id));
+    A2.stop();
+  } finally { await r2.close(); }
 });
 
 test('relé que rechaza el kind: no cuenta como enviado si ningún otro acepta', async () => {

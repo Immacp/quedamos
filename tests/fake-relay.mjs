@@ -16,6 +16,7 @@ function frame(text) {
 
 function matches(f, ev) {
   if (f.kinds && !f.kinds.includes(ev.kind)) return false;
+  if (f.authors && !f.authors.includes(ev.pubkey)) return false;
   if (f.since && ev.created_at < f.since) return false;
   for (const [k, vals] of Object.entries(f)) {
     if (k[0] !== '#') continue;

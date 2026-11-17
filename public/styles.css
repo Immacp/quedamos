@@ -1,31 +1,32 @@
-/* Quedamos - estética glass tipo iOS. Claro y oscuro. Sin color-mix en lo esencial (iOS 16.0/16.1 no lo tiene). */
+/* Quedamos - estética glass tipo iOS. Siempre en modo oscuro. Sin color-mix en lo esencial (iOS 16.0/16.1 no lo tiene). */
 :root {
-  color-scheme: light dark;
-  --bg: #f1f1f7;
-  --label: #000;
-  --label-2: rgba(60, 60, 67, 0.62);
-  --label-3: rgba(60, 60, 67, 0.34);
-  --sep: rgba(60, 60, 67, 0.16);
-  --glass: rgba(255, 255, 255, 0.6);
-  --glass-strong: rgba(250, 250, 253, 0.86);
-  --bar: rgba(247, 247, 251, 0.94);
-  --rim: rgba(255, 255, 255, 0.85);
-  --fill: rgba(118, 118, 128, 0.12);
-  --cell: rgba(120, 120, 128, 0.08);
-  --cell-rim: rgba(60, 60, 67, 0.18);
-  --heat-rgb: 88, 86, 214;
-  --heat-a: 0.2;
-  --accent: #007aff;
-  --accent-soft: rgba(0, 122, 255, 0.12);
+  color-scheme: dark;
+  --bg: #06060b;
+  --label: #fff;
+  --label-2: rgba(235, 235, 245, 0.62);
+  --label-3: rgba(235, 235, 245, 0.32);
+  --sep: rgba(235, 235, 245, 0.12);
+  --glass: rgba(30, 30, 40, 0.5);
+  --glass-strong: rgba(28, 28, 34, 0.86);
+  --bar: rgba(16, 16, 22, 0.94);
+  --rim: rgba(255, 255, 255, 0.1);
+  --fill: rgba(118, 118, 128, 0.24);
+  --cell: rgba(255, 255, 255, 0.075);
+  --cell-rim: rgba(255, 255, 255, 0.06);
+  /* colores de las personas (Apple system colors, versión oscura); app.js también los lee para mezclar el brillo */
+  --k-red: #ff453a; --k-orange: #ff9f0a; --k-yellow: #ffd60a; --k-green: #30d158; --k-mint: #63e6e2; --k-cyan: #64d2ff;
+  --k-blue: #0a84ff; --k-indigo: #5e5ce6; --k-purple: #bf5af2; --k-pink: #ff4fa8; --k-brown: #ac8e68; --k-graphite: #aeaeb2;
+  /* brillo de "coincidís todos": app.js pone aquí la mezcla de los colores del grupo */
+  --glow-rgb: 255, 204, 64;
+  --glow-a: 0.9;
+  --glow-b: 0.45;
+  --accent: #0a84ff;
+  --accent-soft: rgba(10, 132, 255, 0.2);
   --accent-ink: #fff;
-  --danger: #ff3b30;
-  --ok: #248a3d;
-  --warn: #c45200;
-  --gold: #ffd457;
-  --gold-2: #ffbf1f;
-  --gold-ink: #4a3300;
-  --gold-glow: rgba(255, 190, 30, 0.7);
-  --shadow: 0 0.5px 0 rgba(255, 255, 255, 0.6) inset, 0 10px 30px rgba(40, 40, 90, 0.08);
+  --danger: #ff453a;
+  --ok: #30d158;
+  --warn: #ffb340;
+  --shadow: 0 0.5px 0 rgba(255, 255, 255, 0.08) inset, 0 12px 34px rgba(0, 0, 0, 0.4);
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --safe-t: env(safe-area-inset-top, 0px);
@@ -38,62 +39,20 @@
   --gap: 4px;
   --ch: 46px;   /* alto de celda (mínimo 44) */
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #06060b;
-    --label: #fff;
-    --label-2: rgba(235, 235, 245, 0.62);
-    --label-3: rgba(235, 235, 245, 0.32);
-    --sep: rgba(235, 235, 245, 0.12);
-    --glass: rgba(30, 30, 40, 0.5);
-    --glass-strong: rgba(28, 28, 34, 0.86);
-    --bar: rgba(16, 16, 22, 0.94);
-    --rim: rgba(255, 255, 255, 0.1);
-    --fill: rgba(118, 118, 128, 0.24);
-    --cell: rgba(255, 255, 255, 0.075);
-    --cell-rim: rgba(255, 255, 255, 0.06);
-    --heat-rgb: 125, 122, 255;
-    --heat-a: 0.26;
-    --accent: #0a84ff;
-    --accent-soft: rgba(10, 132, 255, 0.2);
-    --danger: #ff453a;
-    --ok: #30d158;
-    --warn: #ffb340;
-    --gold: #ffd95e;
-    --gold-2: #ffc12b;
-    --gold-ink: #3d2a00;
-    --gold-glow: rgba(255, 200, 50, 0.75);
-    --shadow: 0 0.5px 0 rgba(255, 255, 255, 0.08) inset, 0 12px 34px rgba(0, 0, 0, 0.4);
-  }
-}
 
-/* colores de las personas (Apple system colors). --ci: texto encima. */
-.c-red { --c: #ff3b30; --ci: #fff; }
-.c-orange { --c: #ff9500; --ci: #1c1c1e; }
-.c-yellow { --c: #ffcc00; --ci: #1c1c1e; }
-.c-green { --c: #34c759; --ci: #0b2a14; }
-.c-mint { --c: #00c7be; --ci: #05302e; }
-.c-cyan { --c: #32ade6; --ci: #062a3a; }
-.c-blue { --c: #007aff; --ci: #fff; }
-.c-indigo { --c: #5856d6; --ci: #fff; }
-.c-purple { --c: #af52de; --ci: #fff; }
-.c-pink { --c: #ff2d92; --ci: #fff; }
-.c-brown { --c: #a2845e; --ci: #fff; }
-.c-graphite { --c: #8e8e93; --ci: #fff; }
-@media (prefers-color-scheme: dark) {
-  .c-red { --c: #ff453a; }
-  .c-orange { --c: #ff9f0a; }
-  .c-yellow { --c: #ffd60a; }
-  .c-green { --c: #30d158; }
-  .c-mint { --c: #63e6e2; }
-  .c-cyan { --c: #64d2ff; }
-  .c-blue { --c: #0a84ff; }
-  .c-indigo { --c: #5e5ce6; }
-  .c-purple { --c: #bf5af2; }
-  .c-pink { --c: #ff4fa8; }
-  .c-brown { --c: #ac8e68; }
-  .c-graphite { --c: #aeaeb2; --ci: #1c1c1e; }
-}
+/* --c: color de la persona; --ci: texto encima. */
+.c-red { --c: var(--k-red); --ci: #fff; }
+.c-orange { --c: var(--k-orange); --ci: #1c1c1e; }
+.c-yellow { --c: var(--k-yellow); --ci: #1c1c1e; }
+.c-green { --c: var(--k-green); --ci: #0b2a14; }
+.c-mint { --c: var(--k-mint); --ci: #05302e; }
+.c-cyan { --c: var(--k-cyan); --ci: #062a3a; }
+.c-blue { --c: var(--k-blue); --ci: #fff; }
+.c-indigo { --c: var(--k-indigo); --ci: #fff; }
+.c-purple { --c: var(--k-purple); --ci: #fff; }
+.c-pink { --c: var(--k-pink); --ci: #fff; }
+.c-brown { --c: var(--k-brown); --ci: #fff; }
+.c-graphite { --c: var(--k-graphite); --ci: #1c1c1e; }
 
 *, *::before, *::after { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
@@ -120,22 +79,11 @@ body::before {
 .mesh {
   position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden;
   background:
-    radial-gradient(60% 45% at 0% 0%, rgba(255, 100, 150, 0.32), transparent 70%),
-    radial-gradient(55% 45% at 100% 6%, rgba(94, 92, 230, 0.34), transparent 70%),
-    radial-gradient(60% 50% at 100% 100%, rgba(40, 210, 200, 0.3), transparent 72%),
-    radial-gradient(55% 45% at 0% 96%, rgba(255, 170, 60, 0.3), transparent 72%),
-    radial-gradient(40% 30% at 50% 52%, rgba(255, 255, 255, 0.55), transparent 80%),
+    radial-gradient(60% 45% at 0% 0%, rgba(255, 55, 120, 0.26), transparent 70%),
+    radial-gradient(55% 45% at 100% 6%, rgba(94, 92, 230, 0.36), transparent 70%),
+    radial-gradient(60% 50% at 100% 100%, rgba(0, 170, 170, 0.24), transparent 72%),
+    radial-gradient(55% 45% at 0% 96%, rgba(255, 140, 30, 0.18), transparent 72%),
     var(--bg);
-}
-@media (prefers-color-scheme: dark) {
-  .mesh {
-    background:
-      radial-gradient(60% 45% at 0% 0%, rgba(255, 55, 120, 0.26), transparent 70%),
-      radial-gradient(55% 45% at 100% 6%, rgba(94, 92, 230, 0.36), transparent 70%),
-      radial-gradient(60% 50% at 100% 100%, rgba(0, 170, 170, 0.24), transparent 72%),
-      radial-gradient(55% 45% at 0% 96%, rgba(255, 140, 30, 0.18), transparent 72%),
-      var(--bg);
-  }
 }
 
 h1, h2, p { margin: 0; }
@@ -180,12 +128,12 @@ button:disabled { cursor: default; }
 /* ---------- marca: tres círculos que coinciden ---------- */
 .brand { display: flex; flex-direction: column; gap: 6px; padding: 26px 2px 2px; }
 .brand-mark { position: relative; width: 58px; height: 54px; margin-bottom: 12px; }
-.brand-mark span { position: absolute; width: 34px; height: 34px; border-radius: 50%; opacity: 0.9; mix-blend-mode: multiply; }
+.brand-mark span { position: absolute; width: 34px; height: 34px; border-radius: 50%; opacity: 0.9; mix-blend-mode: screen; }
 .brand-mark span:nth-child(1) { left: 0; top: 0; background: #ff2d92; }
 .brand-mark span:nth-child(2) { right: 0; top: 0; background: #5856d6; }
 .brand-mark span:nth-child(3) { left: 12px; bottom: 0; background: #00c7be; }
-@media (prefers-color-scheme: dark) { .brand-mark span { mix-blend-mode: screen; } }
-.brand-sub { color: var(--label-2); font-size: 17px; max-width: 32ch; }
+.home .brand { flex-direction: row; align-items: center; gap: 14px; padding-top: 22px; }
+.home .brand .brand-mark { margin-bottom: 0; transform: scale(0.8); transform-origin: left center; margin-right: -10px; }
 
 /* ---------- grupos (inset grouped de iOS) ---------- */
 .group { display: flex; flex-direction: column; gap: 7px; }
@@ -336,15 +284,8 @@ button.chip:active { transform: scale(0.96); }
 .wdot { width: 22px; height: 20px; border: 0; background: none; padding: 0; display: grid; place-items: center; }
 .wdot span { width: 6px; height: 6px; border-radius: 3px; background: var(--label-3); transition: width 0.25s var(--ease), background 0.2s; }
 .wdot.on span { width: 16px; background: var(--accent); }
-.wdot.gold span { background: var(--gold-2); box-shadow: 0 0 6px var(--gold-glow); }
-.wdot.gold.on span { background: linear-gradient(90deg, var(--accent) 0 55%, var(--gold-2) 55%); }
-.tools { display: flex; justify-content: center; gap: 6px; flex-wrap: wrap; }
-.tool {
-  display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 12px; border: 0; border-radius: 999px;
-  background: transparent; color: var(--label-2); font-size: 14px; font-weight: 500;
-}
-.tool .ico { width: 16px; height: 16px; }
-.tool:active { background: var(--fill); }
+.wdot.glow span { background: rgb(var(--glow-rgb)); box-shadow: 0 0 6px rgba(var(--glow-rgb), 0.9); }
+.wdot.glow.on span { background: linear-gradient(90deg, var(--accent) 0 55%, rgb(var(--glow-rgb)) 55%); }
 
 .day-head, .board-body { display: grid; grid-template-columns: var(--hc) 1fr; column-gap: var(--gap); }
 .day-head {
@@ -375,55 +316,38 @@ button.chip:active { transform: scale(0.96); }
 }
 .cell {
   position: relative; border: 0; padding: 0; margin: 0; border-radius: 12px; min-width: 0;
-  background: linear-gradient(rgba(var(--heat-rgb), calc(var(--heat, 0) * var(--heat-a))), rgba(var(--heat-rgb), calc(var(--heat, 0) * var(--heat-a)))), var(--cell);
+  background: var(--cell);
   box-shadow: inset 0 0 0 0.5px var(--cell-rim);
   touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
-  transition: transform 0.12s var(--ease), background 0.2s, border-radius 0.2s;
+  transition: transform 0.12s var(--ease), border-radius 0.2s, opacity 0.2s;
 }
-.cell::after { /* relleno con mi color */
-  content: ''; position: absolute; inset: 0; border-radius: inherit; background: var(--c); opacity: 0;
-  transition: opacity 0.15s; pointer-events: none;
-}
-.cell.mine::after { opacity: 0.2; }
-.cell.mine { box-shadow: inset 0 0 0 2px var(--c); }
+/* casilla marcada: una franja igual por persona disponible, en su color (--fill lo calcula app.js) */
+.cell.has { background: var(--fill); box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.25); }
 .cell.out { background: transparent; box-shadow: inset 0 0 0 1px var(--cell-rim); opacity: 0.5; }
 .cell.past { opacity: 0.34; cursor: default; }
 .cells.painting .cell { transition: none; }
-.cells.painting .cell::after { transition: none; }
 .cell:focus-visible { outline-offset: 1px; z-index: 2; }
-
-/* franjas: una por persona, siempre en el mismo carril */
-.lanes { position: absolute; inset: 7px 5px; display: flex; justify-content: center; gap: 2px; z-index: 1; pointer-events: none; }
-.lanes i { flex: 1 1 0; max-width: 6px; min-width: 1px; border-radius: 99px; transition: opacity 0.2s; }
-.lanes i.on { background: var(--c); }
 .cells.focusing .cell:not(.hl):not(.out) { opacity: 0.32; }
 .cells.focusing .cell.past:not(.hl) { opacity: 0.2; }
 
-/* coincidencia total: bloque dorado luminoso; celdas contiguas se unen */
+/* coincidís todos: las franjas brillan con la mezcla de vuestros colores; horas seguidas forman un bloque */
 .cell.full {
   background:
-    linear-gradient(115deg, transparent 35%, rgba(255, 255, 255, 0.55) 50%, transparent 65%) 0 0 / 300% 100% no-repeat,
-    linear-gradient(var(--gold), var(--gold));
+    linear-gradient(115deg, transparent 35%, rgba(255, 255, 255, 0.6) 50%, transparent 65%) 0 0 / 300% 100% no-repeat,
+    var(--fill);
   box-shadow: none;
   animation: sheen 3.6s ease-in-out infinite;
 }
-.cell.full::after { display: none; }
 .cell.full::before {
   content: ''; position: absolute; inset: 0; border-radius: inherit; z-index: -1; pointer-events: none;
-  box-shadow: 0 0 14px 2px var(--gold-glow), 0 0 30px 4px rgba(255, 240, 200, 0.45);
+  box-shadow: 0 0 12px 3px rgba(var(--glow-rgb), var(--glow-a)), 0 0 30px 8px rgba(var(--glow-rgb), var(--glow-b));
   animation: halo 3.6s ease-in-out infinite;
 }
-.cell.full.fd { margin-bottom: calc(-1 * var(--gap)); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+/* 1 px de solape para que no quede una raya entre horas del mismo bloque */
+.cell.full.fd { margin-bottom: calc(-1 * var(--gap) - 1px); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 .cell.full.fu { border-top-left-radius: 0; border-top-right-radius: 0; }
-.cell.full.fr { margin-right: calc(-1 * var(--gap)); border-top-right-radius: 0; border-bottom-right-radius: 0; }
-.cell.full.fl { border-top-left-radius: 0; border-bottom-left-radius: 0; }
-/* puente dorado sobre el hueco entre celdas llenas contiguas: sin costuras */
-.cell.full.fr::after, .cell.full.fd::after { display: block; opacity: 1; background: var(--gold); border-radius: 0; z-index: 0; transition: none; }
-.cell.full.fr::after { inset: 0 calc(-1 * var(--gap)) 0 auto; width: calc(2 * var(--gap)); }
-.cell.full.fd::after { inset: auto 0 calc(-1 * var(--gap)) 0; height: calc(2 * var(--gap)); }
-.cell.full.fr.fd::after { inset: 0 calc(-1 * var(--gap)) calc(-1 * var(--gap)) auto; width: calc(2 * var(--gap)); height: auto; }
 @keyframes sheen { 0% { background-position: 120% 0, 0 0; } 60%, 100% { background-position: -20% 0, 0 0; } }
-@keyframes halo { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+@keyframes halo { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
 
 /* parpadeo al saltar desde "Mejores horas" */
 .cell.flash { animation: flash 0.7s ease-in-out 3; z-index: 3; }
@@ -452,22 +376,11 @@ button.chip:active { transform: scale(0.96); }
 .who { display: inline-flex; align-items: center; gap: 5px; }
 .who .chip-dot { width: 9px; height: 9px; }
 .best-item.full {
-  background: linear-gradient(135deg, #fff3c4, var(--gold) 60%, #ffe58f);
-  color: var(--gold-ink); border-color: rgba(255, 255, 255, 0.8);
-  box-shadow: 0 0 0 0.5px rgba(255, 200, 60, 0.6), 0 8px 26px rgba(255, 180, 20, 0.35);
+  background: linear-gradient(135deg, rgba(var(--glow-rgb), 0.28), rgba(var(--glow-rgb), 0.1)), var(--glass);
+  border: 1px solid rgba(var(--glow-rgb), 0.85);
+  box-shadow: 0 0 18px rgba(var(--glow-rgb), 0.45), var(--shadow);
 }
-.best-item.full .best-hours, .best-item.full .best-count { color: var(--gold-ink); }
-.best-item.full .chip-dot { box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.8); }
-@media (prefers-color-scheme: dark) {
-  .best-item.full {
-    background: linear-gradient(135deg, rgba(255, 214, 10, 0.22), rgba(255, 159, 10, 0.12));
-    border: 1px solid rgba(255, 214, 10, 0.45); color: var(--label);
-    box-shadow: 0 8px 26px rgba(255, 180, 20, 0.12);
-  }
-  .best-item.full .best-hours { color: var(--label-2); }
-  .best-item.full .best-count { color: #ffd60a; }
-  .best-item.full .chip-dot { box-shadow: none; }
-}
+.best-item.full .best-count { color: var(--label); }
 
 /* ---------- barra de envío ---------- */
 .sendbar {
@@ -511,7 +424,6 @@ button.chip:active { transform: scale(0.96); }
   :root { --gut: 12px; --hc: 22px; --gap: 3px; }
   .swatch-dot { width: 34px; height: 34px; }
   .dh-n { font-size: 16px; width: 28px; height: 28px; }
-  .lanes { inset: 7px 4px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
