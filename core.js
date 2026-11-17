@@ -1,6 +1,8 @@
 // core.js - lógica pura de Quedamos (sin DOM, sin red). Se usa en el navegador y en los tests de Node.
 
-export const FORMAT_VERSION = 1;
+// v2: el enlace lleva la clave pública de quien creó la quedada (solo esa persona puede borrarla para todos).
+// Los enlaces v1 se siguen abriendo (sin creador: solo se pueden quitar de cada móvil).
+export const FORMAT_VERSION = 2;
 export const DAYS = 30;
 export const MIN_PEOPLE = 2;
 export const MAX_PEOPLE = 20;
@@ -141,40 +143,6 @@ export function weekOfDay(session, day) {
   const w = Math.floor((day + weekdayMon(session.startDate)) / 7);
   return Math.min(weekCount(session) - 1, Math.max(0, w));
 }
-/**
- * Copia el patrón de la semana `w` a las demás semanas (cada día a ese mismo día de la semana).
- * Solo escribe en días de la ventana desde `fromDay` (no toca días pasados); un día de origen fuera de
- * la ventana no se copia. Devuelve el nº de horas cambiadas.
- */
-export function repeatWeek(session, bits, w, fromDay = 0) {
-  const h = hoursOf(session);
-  const first = weekFirstDay(session, w);
-  let changed = 0;
-  for (let wd = 0; wd < 7; wd++) {
-    const src = first + wd;
-    if (src < 0 || src >= DAYS) continue;
-    for (let o = 0; o < weekCount(session); o++) {
-      if (o === w) continue;
-      const dst = weekFirstDay(session, o) + wd;
-      if (dst < Math.max(0, fromDay) || dst >= DAYS) continue;
-      for (let k = 0; k < h; k++) {
-        const v = getBit(bits, src * h + k);
-        if (getBit(bits, dst * h + k) !== v) { setBit(bits, dst * h + k, !!v); changed++; }
-      }
-    }
-  }
-  return changed;
-}
-/** Borra la semana `w` (solo días de la ventana desde `fromDay`). Devuelve el nº de horas borradas. */
-export function clearWeek(session, bits, w, fromDay = 0) {
-  const h = hoursOf(session);
-  const first = weekFirstDay(session, w);
-  let changed = 0;
-  for (let d = Math.max(first, fromDay, 0); d < Math.min(first + 7, DAYS); d++) {
-    for (let i = d * h; i < (d + 1) * h; i++) if (getBit(bits, i)) { setBit(bits, i, false); changed++; }
-  }
-  return changed;
-}
 /** true si en la semana `w` hay alguna hora (desde `fromDay`) en la que coinciden todos. */
 export function weekHasFull(session, counts, required, w, fromDay = 0) {
   const h = hoursOf(session);
@@ -197,7 +165,7 @@ export function validateName(name, others = []) {
 }
 export function validateTitle(t) {
   const s = cleanName(t);
-  if (!s) return { ok: false, error: 'Ponle un título.' };
+  if (!s) return { ok: false, error: 'Escribe la tarea.' };
   if ([...s].length > TITLE_MAX) return { ok: false, error: `Máximo ${TITLE_MAX} caracteres.` };
   return { ok: true, value: s };
 }
@@ -219,9 +187,11 @@ export function validatePayload(p, session) {
 }
 
 // ---------- enlace de la sesión ----------
-/** session: {v,id,key(Uint8Array 32),title,n,startH,endH,startDate} */
+export const HEX64_RE = /^[0-9a-f]{64}$/;
+/** session: {v,id,key(Uint8Array 32),title,n,startH,endH,startDate,creator(hex 64 | null)} */
 export function encodeLink(session, privHex) {
-  const arr = [FORMAT_VERSION, session.id, bytesToB64u(session.key), session.title, session.n, session.startH, session.endH, session.startDate];
+  const arr = [session.creator ? FORMAT_VERSION : 1, session.id, bytesToB64u(session.key), session.title, session.n, session.startH, session.endH, session.startDate];
+  if (session.creator) arr.push(session.creator);
   if (privHex) arr.push(privHex);
   return bytesToB64u(utf8(JSON.stringify(arr)));
 }
@@ -231,8 +201,11 @@ export function decodeLink(hash) {
     if (s.startsWith('#')) s = s.slice(1);
     if (!s) return null;
     const arr = JSON.parse(fromUtf8(b64uToBytes(s)));
-    if (!Array.isArray(arr) || arr[0] !== FORMAT_VERSION) return null;
-    const [, id, keyB64, title, n, startH, endH, startDate, priv] = arr;
+    if (!Array.isArray(arr) || (arr[0] !== 1 && arr[0] !== 2)) return null;
+    const [, id, keyB64, title, n, startH, endH, startDate] = arr;
+    const creator = arr[0] === 2 ? arr[8] : null;
+    const priv = arr[0] === 2 ? arr[9] : arr[8];
+    if (arr[0] === 2 && (typeof creator !== 'string' || !HEX64_RE.test(creator))) return null;
     if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{16,32}$/.test(id)) return null;
     const key = b64uToBytes(keyB64);
     if (key.length !== 32) return null;
@@ -241,12 +214,61 @@ export function decodeLink(hash) {
     if (!Number.isInteger(n) || n < MIN_PEOPLE || n > MAX_PEOPLE) return null;
     if (!Number.isInteger(startH) || !Number.isInteger(endH) || startH < 0 || endH > 24 || endH <= startH) return null;
     if (!isValidDateStr(startDate)) return null;
-    if (priv !== undefined && (typeof priv !== 'string' || !/^[0-9a-f]{64}$/.test(priv))) return null;
-    return { session: { v: FORMAT_VERSION, id, key, title: t.value, n, startH, endH, startDate }, priv: priv || null };
+    if (priv !== undefined && (typeof priv !== 'string' || !HEX64_RE.test(priv))) return null;
+    return { session: { v: FORMAT_VERSION, id, key, title: t.value, n, startH, endH, startDate, creator }, priv: priv || null };
   } catch { return null; }
 }
-export function newSession({ title, n, startH = 9, endH = 22, startDate = todayStr() }) {
-  return { v: FORMAT_VERSION, id: bytesToB64u(randomBytes(16)), key: randomBytes(32), title, n, startH, endH, startDate };
+export function newSession({ title, n, startH = 9, endH = 22, startDate = todayStr(), creator = null }) {
+  return { v: FORMAT_VERSION, id: bytesToB64u(randomBytes(16)), key: randomBytes(32), title, n, startH, endH, startDate, creator };
+}
+
+// ---------- colores de las casillas ----------
+/**
+ * Mezcla de colores para el brillo de las horas en que coinciden todos: media de los colores (#rrggbb)
+ * llevada al máximo de luz, para que brille. Rojo + azul = lila; amarillo + azul = verde.
+ * Devuelve {hex, rgb: 'r, g, b'} o null si no hay colores válidos.
+ */
+export function mixColors(hexes) {
+  const list = (hexes || []).map((x) => String(x).trim()).filter((x) => /^#[0-9a-f]{6}$/i.test(x));
+  if (!list.length) return null;
+  const sum = [0, 0, 0];
+  for (const hx of list) for (let k = 0; k < 3; k++) sum[k] += parseInt(hx.slice(1 + 2 * k, 3 + 2 * k), 16);
+  const avg = sum.map((v) => v / list.length);
+  const max = Math.max(...avg);
+  const rgb = max > 0 ? avg.map((v) => Math.round((v * 255) / max)) : [255, 255, 255];
+  return { hex: '#' + rgb.map((v) => v.toString(16).padStart(2, '0')).join(''), rgb: rgb.join(', ') };
+}
+/**
+ * Color del brillo: el tono de la mezcla con la luminosidad limitada a `maxL` (0–1), para que se vea
+ * también sobre fondo claro (la mezcla de muchos colores tiende al blanco). Devuelve 'r, g, b' o null.
+ */
+export function glowRgb(hexes, maxL = 0.62) {
+  const m = mixColors(hexes);
+  if (!m) return null;
+  let [r, g, b] = m.rgb.split(', ').map((v) => Number(v) / 255);
+  const max = Math.max(r, g, b); const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (l > maxL && max > min) {
+    const d = max - min;
+    const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    let h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    h = (h * 60 + 360) % 360;
+    const c = (1 - Math.abs(2 * maxL - 1)) * s;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const o = maxL - c / 2;
+    const [a1, a2, a3] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+    [r, g, b] = [a1 + o, a2 + o, a3 + o];
+  }
+  return [r, g, b].map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255)).join(', ');
+}
+/** Fondo de una casilla: una franja vertical igual para cada persona disponible, en su color (variables --k-<color> de styles.css). */
+export function cellFill(colorIds) {
+  const ids = colorIds.map((c) => (COLOR_IDS.includes(c) ? c : 'graphite'));
+  if (!ids.length) return null;
+  if (ids.length === 1) return `linear-gradient(var(--k-${ids[0]}), var(--k-${ids[0]}))`;
+  const n = ids.length;
+  const pct = (j) => `${+((j * 100) / n).toFixed(3)}%`;
+  return `linear-gradient(90deg, ${ids.map((c, j) => `var(--k-${c}) ${pct(j)} ${pct(j + 1)}`).join(', ')})`;
 }
 
 // ---------- fusión ----------
